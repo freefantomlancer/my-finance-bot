@@ -1,12 +1,11 @@
 # --- НАЧАЛО ИСПРАВЛЕННОГО КОДА ---
-
+import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# --- НАСТРОЙКИ ---
-# ВСТАВЬ СЮДА СВОЙ НОВЫЙ ТОКЕН ИЗ BOTFATHER!
-BOT_TOKEN = "7390156846:AAESpYLbIwcKUy3ctMXyY6fVRKXATWQuY3g" 
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # --- СПИСОК ОФФЕРОВ ПО КРЕДИТАМ ---
 CREDIT_OFFERS = [
