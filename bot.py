@@ -51,8 +51,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     text = (
-        "ВЫБИРАЙ ПРОДУКТ.\n\n"
-        "Что именно тебя интересует?"
+        "Выберите продукт.\n\n"
+        "Что именно вас интересует?"
     )
     
     await context.bot.send_message(
