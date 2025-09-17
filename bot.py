@@ -1,13 +1,15 @@
 import os
 import logging
-import sqlite3
+import asyncio # <<< ДОБАВЛЕНО: для асинхронной инициализации БД
+import aiosqlite # <<< ДОБАВЛЕНО: для асинхронной работы с БД
 import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 ADMIN_ID = 432303629
-
+DB_NAME = 'bot_database.db'
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 
 # --- СПИСОК ОФФЕРОВ ПО КРЕДИТАМ ---
 CREDIT_OFFERS = [
@@ -44,8 +46,73 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
+
+async def init_db(_) -> None:
+    """Асинхронно инициализирует БД и создает таблицу, если ее нет."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            first_seen TEXT,
+            last_seen TEXT
+        )
+        ''')
+        await db.commit()
+    logger.info("База данных успешно инициализирована.")
+
+async def add_or_update_user(user):
+    """Асинхронно добавляет/обновляет пользователя в БД."""
+    user_id = user.id
+    username = user.username
+    first_name = user.first_name
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as cursor:
+            user_exists = await cursor.fetchone()
+
+        if user_exists:
+            await db.execute(
+                "UPDATE users SET last_seen = ?, username = ?, first_name = ? WHERE user_id = ?",
+                (now, username, first_name, user_id)
+            )
+        else:
+            await db.execute(
+                "INSERT INTO users (user_id, username, first_name, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
+                (user_id, username, first_name, now, now)
+            )
+        await db.commit()
+
+async def get_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Асинхронно получает и отправляет статистику (только для админа)."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
+        return
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(user_id) FROM users") as cursor:
+            total_users = (await cursor.fetchone())[0]
+
+        today = datetime.date.today().strftime('%Y-%m-%d')
+        async with db.execute("SELECT COUNT(user_id) FROM users WHERE date(first_seen) = ?", (today,)) as cursor:
+            today_users = (await cursor.fetchone())[0]
+        
+        async with db.execute("SELECT COUNT(user_id) FROM users WHERE date(last_seen) = ?", (today,)) as cursor:
+            active_today = (await cursor.fetchone())[0]
+
+    await update.message.reply_text(f"""
+📊 **Статистика бота:**
+
+- Всего пользователей: {total_users}
+- Новых за сегодня: {today_users}
+- Активных сегодня: {active_today}
+""", parse_mode='Markdown')
+
 # --- ФУНКЦИЯ ДЛЯ КОМАНДЫ /start ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await add_or_update_user(update.effective_user) 
     keyboard = [
         [InlineKeyboardButton("💸 Микрозаймы", callback_data='mfo')],
         [InlineKeyboardButton("💵 Кредит наличными", callback_data='cash_credit')],
@@ -62,10 +129,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text=text,
         reply_markup=reply_markup
     )
+    
 
 # --- ОБРАБОТЧИК НАЖАТИЙ НА КНОПКИ ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    await add_or_update_user(query.from_user) 
     await query.answer()
 
     if query.data == 'mfo':
@@ -132,144 +201,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     else:
         await query.edit_message_text(text="Этот раздел пока в разработке. Нажмите /start, чтобы вернуться в меню.")
-def init_db():
-    """Инициализирует базу данных и создает таблицу, если она не существует."""
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        first_name TEXT,
-        first_seen TEXT,
-        last_seen TEXT
-    )
-    ''')
-    conn.commit()
-    conn.close()
-    logging.info("База данных успешно инициализирована.")
-
-async def add_or_update_user(user):
-    """Добавляет нового пользователя в БД или обновляет дату последнего визита существующего."""
-    user_id = user.id
-    username = user.username
-    first_name = user.first_name
-    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user_exists = cursor.fetchone()
-
-    if user_exists:
-        cursor.execute("UPDATE users SET last_seen = ?, username = ?, first_name = ? WHERE user_id = ?", 
-                       (now, username, first_name, user_id))
-    else:
-        cursor.execute("INSERT INTO users (user_id, username, first_name, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
-                       (user_id, username, first_name, now, now))
-    
-    conn.commit()
-    conn.close()
-
-# --- КОНЕЦ БЛОКА С БАЗОЙ ДАННЫХ ---
 
 
-# Настройка логирования
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger(__name__)
-
-# --- ФУНКЦИЯ ДЛЯ КОМАНДЫ /start ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # <<< ИЗМЕНЕНО: Добавляем пользователя в БД при старте >>>
-    await add_or_update_user(update.effective_user)
-    
-    keyboard = [
-        [InlineKeyboardButton("💸 Микрозаймы", callback_data='mfo')],
-        [InlineKeyboardButton("💵 Кредит наличными", callback_data='cash_credit')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    text = (
-        "Выберите продукт.\n\n"
-        "Что именно вас интересует?"
-    )
-    
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=text,
-        reply_markup=reply_markup
-    )
-
-# --- ОБРАБОТЧИК НАЖАТИЙ НА КНОПКИ ---
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-
-    # <<< ИЗМЕНЕНО: Добавляем пользователя в БД при нажатии на любую кнопку >>>
-    await add_or_update_user(query.from_user)
-
-    if query.data == 'mfo':
-        # ... ваш код для 'mfo' без изменений ...
-        mfo_text = "Чтобы получить займ..." # (сокращено для примера)
-        await query.message.reply_text(
-            text=mfo_text,
-            parse_mode='Markdown',
-            disable_web_page_preview=True
-        )
-            
-    elif query.data == 'cash_credit':
-        # ... ваш код для 'cash_credit' без изменений ...
-        await query.message.reply_text("Так, кажется, я кое-что нашел для тебя. Посмотри, пожалуйста:")
-        # ... (цикл for с офферами) ...
-    
-    else:
-        await query.edit_message_text(text="Этот раздел пока в разработке. Нажмите /start, чтобы вернуться в меню.")
-
-# --- АДМИН-КОМАНДА ДЛЯ СТАТИСТИКИ --- <<< НОВОЕ
-async def get_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
-        return
-
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-
-    # Считаем общее количество пользователей
-    cursor.execute("SELECT COUNT(user_id) FROM users")
-    total_users = cursor.fetchone()[0]
-
-    # Считаем новых пользователей за сегодня (в вашем часовом поясе)
-    today = datetime.date.today().strftime('%Y-%m-%d')
-    cursor.execute("SELECT COUNT(user_id) FROM users WHERE date(first_seen) = ?", (today,))
-    today_users = cursor.fetchone()[0]
-
-    # Считаем активных пользователей за сегодня
-    cursor.execute("SELECT COUNT(user_id) FROM users WHERE date(last_seen) = ?", (today,))
-    active_today = cursor.fetchone()[0]
-
-    conn.close()
-    
-    await update.message.reply_text(f"""
-📊 **Статистика бота:**
-
-- Всего пользователей: {total_users}
-- Новых за сегодня: {today_users}
-- Активных сегодня: {active_today}
-""", parse_mode='Markdown')
 
 # --- ЗАПУСК БОТА ---
+
 def main() -> None:
-    application = Application.builder().token(BOT_TOKEN).build()
+    """Основная функция для запуска бота."""
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(init_db)  # <-- ВОТ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+        .build()
+    )
+
+    # Добавляем обработчики (здесь все без изменений)
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stats", get_stats))
     application.add_handler(CallbackQueryHandler(button_handler))
+
+    # Запускаем бота
     application.run_polling()
 
 if __name__ == "__main__":
     main()
-
-# --- КОНЕЦ КОДА ---
