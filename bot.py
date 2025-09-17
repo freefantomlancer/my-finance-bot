@@ -3,6 +3,9 @@ import logging
 import asyncio # <<< ДОБАВЛЕНО: для асинхронной инициализации БД
 import aiosqlite # <<< ДОБАВЛЕНО: для асинхронной работы с БД
 import datetime
+import threading # <<< ДОБАВЛЕНО: для запуска веб-сервера в отдельном потоке
+from flask import Flask # <<< ДОБАВЛЕНО: для создания веб-сервера
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -10,6 +13,16 @@ ADMIN_ID = 432303629
 DB_NAME = 'bot_database.db'
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+def run_health_check_server():
+    app = Flask(__name__)
+    
+    @app.route('/')
+    def health_check():
+        return "Bot is alive!", 200
+
+    # Timeweb (и другие PaaS) передают порт через переменную окружения PORT
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # --- СПИСОК ОФФЕРОВ ПО КРЕДИТАМ ---
 CREDIT_OFFERS = [
@@ -44,6 +57,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("werkzeug").setLevel(logging.WARNING) # <<< ДОБАВЛЕНО: отключаем лишние логи от Flask
 logger = logging.getLogger(__name__)
 
 
@@ -207,20 +221,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # --- ЗАПУСК БОТА ---
 
 def main() -> None:
-    """Основная функция для запуска бота."""
+    """Основная функция для запуска бота и сервера проверки здоровья."""
+
+    # <<< ИЗМЕНЕНО: Запускаем веб-сервер в отдельном потоке >>>
+    health_thread = threading.Thread(target=run_health_check_server, daemon=True)
+    health_thread.start()
+    logger.info("Health check server started in a separate thread.")
+
     application = (
         Application.builder()
         .token(BOT_TOKEN)
-        .post_init(init_db)  # <-- ВОТ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+        .post_init(init_db)
         .build()
     )
 
-    # Добавляем обработчики (здесь все без изменений)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stats", get_stats))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    # Запускаем бота
     application.run_polling()
 
 if __name__ == "__main__":
