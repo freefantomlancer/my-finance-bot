@@ -77,7 +77,38 @@ async def init_db(_) -> None:
         ''')
         await db.commit()
     logger.info("База данных успешно инициализирована.")
+    
+async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает последних 10 пользователей (только для админа)."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("У вас нет прав для выполнения этой команды.")
+        return
 
+    users_list = []
+    try:
+        async with aiosqlite.connect(DB_NAME) as db:
+            # Выбираем 10 последних пользователей, сортируя по дате первого визита
+            async with db.execute(
+                "SELECT user_id, username, first_name, first_seen FROM users ORDER BY first_seen DESC LIMIT 10"
+            ) as cursor:
+                async for row in cursor:
+                    # row[0] = user_id, row[1] = username, row[2] = first_name, row[3] = first_seen
+                    users_list.append(
+                        f"ID: `{row[0]}` | @{row[1]} ({row[2]}) | Добавлен: {row[3]}"
+                    )
+
+        if not users_list:
+            reply_text = "В базе данных пока нет пользователей."
+        else:
+            header = "👤 **Последние 10 пользователей:**\n\n"
+            reply_text = header + "\n".join(users_list)
+
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка пользователей: {e}")
+        reply_text = "Произошла ошибка при получении списка пользователей."
+
+    await update.message.reply_text(reply_text, parse_mode='Markdown')
+    
 async def add_or_update_user(user):
     """Асинхронно добавляет/обновляет пользователя в БД."""
     user_id = user.id
@@ -239,6 +270,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stats", get_stats))
+    application.add_handler(CommandHandler("users", show_users))
     application.add_handler(CallbackQueryHandler(button_handler))
 
     application.run_polling()
